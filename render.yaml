@@ -1,0 +1,12 @@
+services:
+  - type: worker
+    name: lumen-bot
+    runtime: docker
+    plan: free
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OWNER_CHAT_ID
+        sync: false
