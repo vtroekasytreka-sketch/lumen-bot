@@ -1,12 +1,15 @@
 """
 Lumen Bot - Telegram bot for discovering life mission through deep dialogue.
+Webhook version for Render deployment.
 """
 
 import asyncio
 import os
 import logging
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import (
@@ -14,14 +17,15 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    FSInputFile
+    FSInputFile,
+    Update
 )
 from aiogram.enums import ChatAction
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import dialog_manager
 from dialog_manager import DialogState
 import groq_client
-import voice_handler
 import neon_generator
 import storage
 
@@ -32,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+PORT = int(os.getenv("PORT", 10000))
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env file")
@@ -39,6 +45,8 @@ if not TELEGRAM_BOT_TOKEN:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
+
+WEBHOOK_PATH = f"/webhook/{TELEGRAM_BOT_TOKEN}"
 
 
 async def send_typing(chat_id: int, duration: float = 2.0):
@@ -130,32 +138,6 @@ async def cmd_mission(message: Message):
         )
 
 
-@router.message(F.voice)
-async def handle_voice(message: Message):
-    """Handle voice messages."""
-    user_id = message.from_user.id
-    state = dialog_manager.get_state(user_id)
-
-    if state != DialogState.IN_PROGRESS:
-        await message.answer("Напиши /start чтобы начать диалог.")
-        return
-
-    await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-
-    text = await voice_handler.process_voice_message(bot, message.voice.file_id)
-
-    if not text:
-        await message.answer(
-            "Не удалось распознать голосовое сообщение. "
-            "Попробуй ещё раз или напиши текстом."
-        )
-        return
-
-    await message.answer(f"🎤 Я услышал: {text}")
-
-    await process_user_message(message, text, voice=True)
-
-
 @router.message(F.text)
 async def handle_text(message: Message):
     """Handle text messages."""
@@ -166,15 +148,15 @@ async def handle_text(message: Message):
         await message.answer("Напиши /start чтобы начать диалог.")
         return
 
-    await process_user_message(message, message.text, voice=False)
+    await process_user_message(message, message.text)
 
 
-async def process_user_message(message: Message, text: str, voice: bool = False):
+async def process_user_message(message: Message, text: str):
     """Process user message and get Lumen's response."""
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    dialog_manager.add_user_message(user_id, text, voice)
+    dialog_manager.add_user_message(user_id, text, voice=False)
 
     history = dialog_manager.get_history(user_id)
 
@@ -183,7 +165,7 @@ async def process_user_message(message: Message, text: str, voice: bool = False)
     try:
         response = await groq_client.get_lumen_response(history)
     except Exception as e:
-        logger.error(f"Grok API error: {e}")
+        logger.error(f"Groq API error: {e}")
         await message.answer(
             "Прости, мне нужно немного времени. Попробуй написать снова."
         )
@@ -343,14 +325,43 @@ async def notify_owner(user_id: int, mission_data: dict, image_path: str = None)
         logger.error(f"Failed to notify owner: {e}")
 
 
-async def main():
-    """Start the bot."""
+async def on_startup(app: web.Application):
+    """Set webhook on startup."""
+    webhook_url = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+    await bot.set_webhook(webhook_url)
+    logger.info(f"Webhook set to {webhook_url}")
+
+
+async def on_shutdown(app: web.Application):
+    """Remove webhook on shutdown."""
+    await bot.delete_webhook()
+    await bot.session.close()
+
+
+async def health_check(request):
+    """Health check endpoint."""
+    return web.Response(text="OK")
+
+
+def main():
+    """Start the bot with webhook."""
     dp.include_router(router)
 
-    logger.info("Starting Lumen bot...")
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
 
-    await dp.start_polling(bot)
+    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+
+    setup_application(app, dp, bot=bot)
+
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    logger.info(f"Starting webhook server on port {PORT}")
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
