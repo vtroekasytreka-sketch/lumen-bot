@@ -151,7 +151,8 @@ async def synthesize_mission(history: list) -> dict:
                     {"role": "user", "content": prompt}
                 ],
                 "temperature": 0.8,
-                "max_tokens": 500
+                "max_tokens": 800,
+                "response_format": {"type": "json_object"}
             }
         )
         response.raise_for_status()
@@ -160,12 +161,23 @@ async def synthesize_mission(history: list) -> dict:
     content = data["choices"][0]["message"]["content"].strip()
 
     try:
+        result = json.loads(content)
+        if "mission" in result and "explanation" in result:
+            if "neon_color" not in result:
+                result["neon_color"] = "#B040FF"
+            return result
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+
+    try:
         start = content.find("{")
         end = content.rfind("}") + 1
         if start != -1 and end > start:
             json_str = content[start:end]
-            return json.loads(json_str)
-    except json.JSONDecodeError:
+            result = json.loads(json_str)
+            if "mission" in result:
+                return result
+    except (json.JSONDecodeError, KeyError, TypeError):
         pass
 
     return {
