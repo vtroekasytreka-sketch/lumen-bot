@@ -83,7 +83,7 @@ async def cmd_start(message: Message):
 
     await send_typing(message.chat.id, 3.0)
 
-    first_message = groq_client.get_first_message()
+    first_message = await groq_client.get_first_message()
     dialog_manager.add_bot_message(user_id, first_message)
 
     await message.answer(
@@ -102,7 +102,7 @@ async def cmd_restart(message: Message):
 
     await send_typing(message.chat.id, 3.0)
 
-    first_message = groq_client.get_first_message()
+    first_message = await groq_client.get_first_message()
     dialog_manager.add_bot_message(user_id, first_message)
 
     await message.answer(
