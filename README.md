@@ -160,6 +160,30 @@ lumen-bot/
 - Превью сохраняются в `previews/`
 - Для production рекомендуется использовать базу данных
 
+## Деплой на Render (24/7)
+
+### Проблема
+Бесплатный план Render усыпляет сервис через 15 минут неактивности. GitHub Actions cron ненадёжен.
+
+### Решение: UptimeRobot (бесплатно, 2 минуты)
+
+1. Зайди на [uptimerobot.com](https://uptimerobot.com) и зарегистрируйся
+2. Нажми **Add New Monitor**
+3. Заполни:
+   - Monitor Type: **HTTP(s)**
+   - Friendly Name: `Lumen Bot`
+   - URL: `https://lumen-bot-vsc8.onrender.com/health`
+   - Monitoring Interval: **5 minutes**
+4. Нажми **Create Monitor**
+
+Готово! UptimeRobot будет пинговать бота каждые 5 минут и не даст ему заснуть.
+
+### Альтернативы (платформы без засыпания)
+
+- **Railway** — $5 бесплатных кредитов/месяц, сервисы не засыпают
+- **Fly.io** — бесплатный tier, не засыпает
+- **Oracle Cloud Free Tier** — бесплатный VPS навсегда
+
 ## Лицензия
 
 MIT
