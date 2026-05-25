@@ -1,6 +1,6 @@
 """
 Lumen Bot - Telegram bot for discovering life mission through deep dialogue.
-Polling version for reliable 24/7 deployment.
+Polling + health check server for Render deployment.
 """
 
 import asyncio
@@ -8,6 +8,7 @@ import os
 import logging
 from dotenv import load_dotenv
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import (
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID")
+PORT = int(os.getenv("PORT", 10000))
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env file")
@@ -317,9 +319,30 @@ async def notify_owner(user_id: int, mission_data: dict, image_path: str = None)
         logger.error(f"Failed to notify owner: {e}")
 
 
+async def health_check(request):
+    """Health check endpoint for Render."""
+    return web.Response(text="OK")
+
+
+async def run_health_server():
+    """Run simple HTTP server for health checks."""
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"Health check server running on port {PORT}")
+
+
 async def main():
-    """Start the bot with polling."""
+    """Start the bot with polling and health check server."""
     dp.include_router(router)
+
+    await run_health_server()
+
     logger.info("Starting bot with polling...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)

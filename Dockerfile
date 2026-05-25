@@ -9,4 +9,6 @@ COPY . .
 
 RUN mkdir -p logs previews
 
+EXPOSE 10000
+
 CMD ["python", "bot.py"]
