@@ -3,6 +3,7 @@ services:
     name: lumen-bot
     runtime: docker
     plan: free
+    healthCheckPath: /health
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
