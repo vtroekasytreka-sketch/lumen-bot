@@ -1,15 +1,13 @@
 """
 Lumen Bot - Telegram bot for discovering life mission through deep dialogue.
-Webhook version for Render deployment.
+Polling version for reliable 24/7 deployment.
 """
 
 import asyncio
 import os
 import logging
-from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
-from aiohttp import web
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import (
@@ -18,10 +16,8 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     FSInputFile,
-    Update
 )
 from aiogram.enums import ChatAction
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import dialog_manager
 from dialog_manager import DialogState
@@ -36,8 +32,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
-PORT = int(os.getenv("PORT", 10000))
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env file")
@@ -45,8 +39,6 @@ if not TELEGRAM_BOT_TOKEN:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
-
-WEBHOOK_PATH = f"/webhook/{TELEGRAM_BOT_TOKEN}"
 
 
 async def send_typing(chat_id: int, duration: float = 2.0):
@@ -325,43 +317,13 @@ async def notify_owner(user_id: int, mission_data: dict, image_path: str = None)
         logger.error(f"Failed to notify owner: {e}")
 
 
-async def on_startup(app: web.Application):
-    """Set webhook on startup."""
-    webhook_url = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
-    await bot.set_webhook(webhook_url)
-    logger.info(f"Webhook set to {webhook_url}")
-
-
-async def on_shutdown(app: web.Application):
-    """Remove webhook on shutdown."""
-    await bot.delete_webhook()
-    await bot.session.close()
-
-
-async def health_check(request):
-    """Health check endpoint."""
-    return web.Response(text="OK")
-
-
-def main():
-    """Start the bot with webhook."""
+async def main():
+    """Start the bot with polling."""
     dp.include_router(router)
-
-    app = web.Application()
-    app.router.add_get("/", health_check)
-    app.router.add_get("/health", health_check)
-
-    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-
-    setup_application(app, dp, bot=bot)
-
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-
-    logger.info(f"Starting webhook server on port {PORT}")
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    logger.info("Starting bot with polling...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
