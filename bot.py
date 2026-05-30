@@ -1,350 +1,293 @@
-"""
-Lumen Bot - Telegram bot for discovering life mission through deep dialogue.
-Polling + health check server for Render deployment.
+"""Lumen Bot — Telegram-помощник для поиска миссии через диалог.
+
+Стек: aiogram 3.x (polling), aiohttp (health server), Claude через OpenRouter.
+
+Запуск: python bot.py
 """
 
 import asyncio
-import os
 import logging
-from dotenv import load_dotenv
+import os
+import sys
+from typing import Any
 
 from aiohttp import web
-from aiogram import Bot, Dispatcher, Router, F
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.types import (
-    Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
     FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
 )
-from aiogram.enums import ChatAction
+from dotenv import load_dotenv
 
-import dialog_manager
-from dialog_manager import DialogState
-import groq_client
+from claude_client import call_claude_chat
 import neon_generator
-import storage
+
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("lumen")
+
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID")
-PORT = int(os.getenv("PORT", 10000))
-
 if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN not set in .env file")
+    print("Ошибка: TELEGRAM_BOT_TOKEN не найден в .env")
+    sys.exit(1)
+
+if not os.getenv("OPENROUTER_API_KEY"):
+    print("Ошибка: OPENROUTER_API_KEY не найден в .env")
+    sys.exit(1)
+
+
+SYSTEM_PERSONAL = """Ты — Люмен, тихий помощник. Помогаешь человеку найти его личную миссию в 2-3 слова.
+
+Твоя задача — вытащить из него то, что уже есть внутри. Не придумать — а назвать точно.
+
+Задавай вопросы по одному. Медленно. Глубоко. Без спешки.
+Слушай ответы. Замечай повторяющиеся слова и образы.
+Когда почувствуешь суть — предложи 3 варианта миссии по 2-3 слова.
+
+Стиль: тихий, глубокий, без мотивации и шаблонов. Не подбадривай и не комментируй ответ — сразу следующий вопрос.
+
+Вопросы примерно такие (адаптируй под ответы):
+- Что ты делаешь, когда забываешь о времени?
+- Что для тебя очевидно, но другим непонятно?
+- Если убрать деньги и мнение других — чем бы занимался?
+- Что тебя злит в мире? (за этим часто стоит миссия)
+- Каким тебя запомнят люди, которые тебя знают?
+
+ЖЁСТКИЕ ПРАВИЛА:
+- Только ОДИН вопрос за раз. Никогда не задавай два сразу.
+- Минимум 5 вопросов прежде чем предлагать варианты.
+- После 5–7 ответов предложи 3 варианта миссии. Каждый с новой строки, без нумерации, по 2-3 слова. Пример:
+  Свет с направлением
+  Тихая сила
+  Глубина в простом
+- После вариантов спроси: «Какой резонирует? Или поищем точнее?»
+- Если пользователь выбрал — подтверди итоговое слово/фразу и в том же сообщении закончи строкой: «Это можно сделать в неон. Хочешь узнать как?»
+- Если хочет докрутить — задай 1–2 уточняющих вопроса и предложи новые 3 варианта.
+- Никогда не объясняй, что ты делаешь. Просто веди диалог."""
+
+
+SYSTEM_BUSINESS = """Ты — Люмен. Помогаешь предпринимателю найти миссию его бизнеса в 2-3 слова.
+
+Не слоган. Не описание услуг. А суть — зачем это дело существует.
+
+Задавай вопросы по одному. Конкретно. По делу.
+Слушай, что повторяется. Замечай, где у человека загораются глаза даже в тексте.
+
+Вопросы примерно такие (адаптируй):
+- Чем занимается твой бизнес? Коротко.
+- Почему ты начал именно это, а не другое?
+- Что ты даёшь клиенту кроме продукта/услуги?
+- Что было бы потеряно, если бы твоего бизнеса не было?
+- Чем твоё дело отличается — не по услуге, а по духу?
+- Какой момент в работе даёт тебе больше всего энергии?
+
+ЖЁСТКИЕ ПРАВИЛА:
+- Только ОДИН вопрос за раз. Никогда не задавай два сразу.
+- Минимум 5 вопросов прежде чем предлагать варианты.
+- После 5–7 ответов предложи 3 варианта миссии бизнеса — каждый с новой строки, без нумерации, коротко и точно. Пример:
+  Тепло в деталях
+  Скорость с душой
+  Смысл в каждом шве
+- После вариантов спроси: «Какой точнее? Или докрутим?»
+- Если пользователь выбрал — подтверди итоговое слово/фразу и в том же сообщении закончи строкой: «Это слово можно поставить на стену офиса в неоне. Хочешь узнать как?»
+- Если хочет докрутить — задай 1–2 уточняющих вопроса и предложи новые 3 варианта.
+- Никогда не объясняй, что ты делаешь. Просто веди диалог."""
+
+
+WELCOME = (
+    "Привет. Я помогу найти твоё слово.\n\n"
+    "Про что работаем сегодня?"
+)
+
+NEON_COLOR = "#B040FF"
+
+
+user_states: dict[int, dict[str, Any]] = {}
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 
 
-async def send_typing(chat_id: int, duration: float = 2.0):
-    """Send typing action for specified duration."""
-    await bot.send_chat_action(chat_id, ChatAction.TYPING)
-    await asyncio.sleep(duration)
+def start_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="1. Про меня — личная миссия",
+                              callback_data="branch:1")],
+        [InlineKeyboardButton(text="2. Про моё дело — миссия бизнеса",
+                              callback_data="branch:2")],
+    ])
 
 
-async def send_with_typing(chat_id: int, text: str, delay: float = 2.0, **kwargs):
-    """Send message with typing indicator beforehand."""
-    await send_typing(chat_id, delay)
-    return await bot.send_message(chat_id, text, **kwargs)
+def neon_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✨ Сделать неон", callback_data="neon")],
+    ])
+
+
+def neon_offered(reply: str) -> bool:
+    """Claude закончил сообщение предложением неона."""
+
+    low = reply.lower()
+    return "можно сделать в неон" in low or "поставить на стену офиса в неоне" in low
+
+
+async def ask_claude(system: str, history: list[dict],
+                     max_tokens: int = 500) -> str:
+    """Запрос к Claude в отдельном потоке — requests блокирующий."""
+
+    return await asyncio.to_thread(call_claude_chat, history, system, max_tokens)
 
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
-    """Handle /start command."""
-    user_id = message.from_user.id
-    username = message.from_user.username
-    name = message.from_user.full_name
-
-    if dialog_manager.has_completed_dialog(user_id):
-        mission_data = dialog_manager.get_user_mission(user_id)
-        if mission_data:
-            await message.answer(
-                f"С возвращением.\n\n"
-                f"Твоя найденная миссия: *{mission_data['mission']}*\n\n"
-                f"Если хочешь пройти путь заново — напиши /restart",
-                parse_mode="Markdown"
-            )
-            return
-
-    dialog_manager.start_dialog(user_id, username, name)
-
-    await send_typing(message.chat.id, 3.0)
-
-    first_message = await groq_client.get_first_message()
-    dialog_manager.add_bot_message(user_id, first_message)
-
-    await message.answer(
-        f"Привет. Я Люмен.\n\n{first_message}"
-    )
+    user_states.pop(message.chat.id, None)
+    await message.answer(WELCOME, reply_markup=start_keyboard())
 
 
 @router.message(Command("restart"))
 async def cmd_restart(message: Message):
-    """Handle /restart command."""
-    user_id = message.from_user.id
-    username = message.from_user.username
-    name = message.from_user.full_name
-
-    dialog_manager.restart_dialog(user_id, username, name)
-
-    await send_typing(message.chat.id, 3.0)
-
-    first_message = await groq_client.get_first_message()
-    dialog_manager.add_bot_message(user_id, first_message)
-
-    await message.answer(
-        f"Начнём сначала.\n\n{first_message}"
-    )
+    user_states.pop(message.chat.id, None)
+    await message.answer(WELCOME, reply_markup=start_keyboard())
 
 
 @router.message(Command("mission"))
 async def cmd_mission(message: Message):
-    """Handle /mission command - show saved mission."""
-    user_id = message.from_user.id
-
-    mission_data = dialog_manager.get_user_mission(user_id)
-
-    if mission_data:
-        await message.answer(
-            f"Твоя миссия: *{mission_data['mission']}*\n\n"
-            f"{mission_data['explanation']}",
-            parse_mode="Markdown"
-        )
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Показать в неоне", callback_data="show_neon")]
-        ])
-        await message.answer(
-            "Хочешь увидеть её в неоне?",
-            reply_markup=keyboard
-        )
+    state = user_states.get(message.chat.id)
+    mission = (state or {}).get("final_mission")
+    if mission:
+        await message.answer(f"Твоя миссия: {mission}", reply_markup=neon_keyboard())
     else:
-        await message.answer(
-            "У тебя пока нет найденной миссии.\n"
-            "Напиши /start чтобы начать путь."
+        await message.answer("Миссии пока нет. /start — чтобы начать.")
+
+
+@router.callback_query(F.data.startswith("branch:"))
+async def cb_branch(cb: CallbackQuery):
+    branch = int(cb.data.split(":")[1])
+    chat_id = cb.message.chat.id
+    system = SYSTEM_PERSONAL if branch == 1 else SYSTEM_BUSINESS
+
+    state = {
+        "branch": branch,
+        "system": system,
+        "history": [{"role": "user", "content": "Начнём."}],
+        "final_mission": None,
+    }
+    user_states[chat_id] = state
+
+    await cb.answer()
+    await bot.send_chat_action(chat_id, "typing")
+    try:
+        reply = await ask_claude(system, state["history"])
+    except Exception:
+        logger.exception("Claude error on branch select")
+        await cb.message.answer("Не удалось связаться с Claude. Попробуй /start ещё раз.")
+        return
+
+    state["history"].append({"role": "assistant", "content": reply})
+    await cb.message.answer(reply)
+
+
+@router.callback_query(F.data == "neon")
+async def cb_neon(cb: CallbackQuery):
+    chat_id = cb.message.chat.id
+    state = user_states.get(chat_id)
+    if not state:
+        await cb.answer("Сначала /start", show_alert=True)
+        return
+
+    await cb.answer()
+    await bot.send_chat_action(chat_id, "upload_photo")
+
+    extract_prompt = (
+        "Из нашего диалога выведи итоговую миссию пользователя в 2-3 слова. "
+        "Только эту фразу, без кавычек, без пояснений, одной строкой."
+    )
+    extract_history = list(state["history"]) + [
+        {"role": "user", "content": extract_prompt}
+    ]
+
+    try:
+        raw = await ask_claude(state["system"], extract_history, max_tokens=30)
+    except Exception:
+        logger.exception("Claude error on mission extract")
+        await cb.message.answer("Не получилось достать миссию. /restart")
+        return
+
+    mission = raw.strip().strip('"').strip().splitlines()[0].strip()
+    state["final_mission"] = mission
+
+    try:
+        path = await asyncio.to_thread(
+            neon_generator.generate_neon,
+            mission,
+            NEON_COLOR,
+            f"previews/neon_{chat_id}.png",
         )
+        await cb.message.answer_photo(
+            photo=FSInputFile(path),
+            caption=mission,
+        )
+    except Exception:
+        logger.exception("Neon generation failed")
+        await cb.message.answer(f"{mission}\n\n(не удалось собрать превью)")
 
 
 @router.message(F.text)
 async def handle_text(message: Message):
-    """Handle text messages."""
-    user_id = message.from_user.id
-    state = dialog_manager.get_state(user_id)
-
-    if state != DialogState.IN_PROGRESS:
-        await message.answer("Напиши /start чтобы начать диалог.")
-        return
-
-    await process_user_message(message, message.text)
-
-
-async def process_user_message(message: Message, text: str):
-    """Process user message and get Lumen's response."""
-    user_id = message.from_user.id
     chat_id = message.chat.id
+    state = user_states.get(chat_id)
+    if not state:
+        await message.answer("Нажми /start, чтобы начать.")
+        return
 
-    dialog_manager.add_user_message(user_id, text, voice=False)
+    history = state["history"]
+    history.append({"role": "user", "content": message.text.strip()})
 
-    history = dialog_manager.get_history(user_id)
-
-    await send_typing(chat_id, 2.5)
-
+    await bot.send_chat_action(chat_id, "typing")
     try:
-        response = await groq_client.get_lumen_response(history)
-    except Exception as e:
-        logger.error(f"Groq API error: {e}")
-        await message.answer(
-            "Прости, мне нужно немного времени. Попробуй написать снова."
-        )
+        reply = await ask_claude(state["system"], history)
+    except Exception:
+        logger.exception("Claude error on user message")
+        history.pop()
+        await message.answer("Не получилось ответить. Попробуй ещё раз.")
         return
 
-    if response.get("ready"):
-        await begin_synthesis(message)
-    else:
-        lumen_message = response.get("message", "Расскажи мне больше.")
-        dialog_manager.add_bot_message(user_id, lumen_message)
-        await message.answer(lumen_message)
+    history.append({"role": "assistant", "content": reply})
+
+    kb = neon_keyboard() if neon_offered(reply) else None
+    await message.answer(reply, reply_markup=kb)
 
 
-async def begin_synthesis(message: Message):
-    """Begin mission synthesis process."""
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-
-    dialog_manager.set_state(user_id, DialogState.AWAITING_SYNTHESIS)
-
-    await send_with_typing(chat_id, "Позволь мне побыть с тем что ты сказал...", 5.0)
-
-    history = dialog_manager.get_history(user_id)
-
-    try:
-        mission_data = await groq_client.synthesize_mission(history)
-    except Exception as e:
-        logger.error(f"Mission synthesis error: {e}")
-        await message.answer(
-            "Что-то пошло не так. Попробуй /restart и начнём заново."
-        )
-        return
-
-    mission = mission_data.get("mission", "Путь света")
-    explanation = mission_data.get("explanation", "")
-    neon_color = mission_data.get("neon_color", "#B040FF")
-
-    dialog_manager.save_mission(user_id, mission, explanation, neon_color)
-
-    await send_with_typing(chat_id, "Я вижу кое-что в твоих словах.", 3.0)
-
-    await send_with_typing(chat_id, f"Твой путь звучит как: *{mission}*", 2.0, parse_mode="Markdown")
-
-    await asyncio.sleep(1.5)
-    await message.answer(explanation)
-
-    await asyncio.sleep(2.0)
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Да, покажи", callback_data="show_neon"),
-            InlineKeyboardButton(text="Нет, спасибо", callback_data="skip_neon")
-        ]
-    ])
-
-    dialog_manager.set_state(user_id, DialogState.AWAITING_NEON_CHOICE)
-
-    await message.answer(
-        "Хочешь увидеть как это выглядит в неоне?",
-        reply_markup=keyboard
-    )
+async def health(_request):
+    return web.Response(text="ok")
 
 
-@router.callback_query(F.data == "show_neon")
-async def callback_show_neon(callback: CallbackQuery):
-    """Handle 'show neon' button press."""
-    user_id = callback.from_user.id
-    chat_id = callback.message.chat.id
-
-    await callback.answer()
-
-    mission_data = dialog_manager.get_user_mission(user_id)
-    if not mission_data:
-        await callback.message.answer("Сначала пройди диалог: /start")
-        return
-
-    await bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
-
-    try:
-        image_path = neon_generator.generate_neon_for_user(
-            user_id,
-            mission_data["mission"],
-            mission_data["neon_color"]
-        )
-    except Exception as e:
-        logger.error(f"Neon generation error: {e}")
-        await callback.message.answer("Не удалось создать превью. Попробуй позже.")
-        return
-
-    photo = FSInputFile(image_path)
-    await bot.send_photo(chat_id, photo)
-
-    dialog_manager.mark_neon_sent(user_id)
-    dialog_manager.mark_completed(user_id)
-
-    await callback.message.answer(
-        "Вот как может выглядеть твой путь в неоне.\n\n"
-        "Это только превью.\n"
-        "Настоящая вывеска — живая, светящаяся, на стене твоего дома.\n\n"
-        "Если хочешь сделать её реальной — напиши @neonphrase_studio\n"
-        "Обсудим размер, цвет и детали."
-    )
-
-    await notify_owner(user_id, mission_data, image_path)
-
-
-@router.callback_query(F.data == "skip_neon")
-async def callback_skip_neon(callback: CallbackQuery):
-    """Handle 'skip neon' button press."""
-    user_id = callback.from_user.id
-
-    await callback.answer()
-
-    dialog_manager.mark_completed(user_id)
-
-    await callback.message.answer(
-        "Хорошо. Твоя миссия сохранена.\n"
-        "Если передумаешь — напиши /mission"
-    )
-
-    mission_data = dialog_manager.get_user_mission(user_id)
-    if mission_data:
-        await notify_owner(user_id, mission_data, None)
-
-
-async def notify_owner(user_id: int, mission_data: dict, image_path: str = None):
-    """Send notification to bot owner about completed dialog."""
-    if not OWNER_CHAT_ID:
-        return
-
-    dialog = storage.get_user_dialog(user_id)
-    if not dialog:
-        return
-
-    username = dialog.get("username", "")
-    name = dialog.get("name", "")
-    message_count = len([m for m in dialog.get("history", []) if m["role"] == "user"])
-
-    user_display = f"@{username}" if username else "(без username)"
-
-    notification_text = (
-        f"🌟 Новая миссия найдена!\n\n"
-        f"👤 {user_display} ({name})\n"
-        f"✨ {mission_data['mission']}\n"
-        f"📝 {mission_data['explanation']}\n"
-        f"🎨 Цвет: {mission_data['neon_color']}\n"
-        f"💬 Диалог: {message_count} сообщений"
-    )
-
-    try:
-        await bot.send_message(int(OWNER_CHAT_ID), notification_text)
-
-        if image_path:
-            photo = FSInputFile(image_path)
-            await bot.send_photo(int(OWNER_CHAT_ID), photo)
-    except Exception as e:
-        logger.error(f"Failed to notify owner: {e}")
-
-
-async def health_check(request):
-    """Health check endpoint for Render."""
-    return web.Response(text="OK")
-
-
-async def run_health_server():
-    """Run simple HTTP server for health checks."""
+async def start_health_server():
     app = web.Application()
-    app.router.add_get("/", health_check)
-    app.router.add_get("/health", health_check)
-
+    app.router.add_get("/health", health)
+    app.router.add_get("/", health)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
     await site.start()
-    logger.info(f"Health check server running on port {PORT}")
+    logger.info("Health server on :%d", port)
 
 
 async def main():
-    """Start the bot with polling and health check server."""
     dp.include_router(router)
-
-    await run_health_server()
-
-    logger.info("Starting bot with polling...")
-    await bot.delete_webhook(drop_pending_updates=True)
+    await start_health_server()
+    logger.info("Lumen bot polling...")
     await dp.start_polling(bot)
 
 
