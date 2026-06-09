@@ -1,0 +1,20 @@
+[Unit]
+Description=Lumen Telegram bot (@neonphrase_bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Поправь путь, если клонируешь не в /opt/lumen-bot
+WorkingDirectory=/opt/lumen-bot
+EnvironmentFile=/opt/lumen-bot/.env
+ExecStart=/opt/lumen-bot/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+# Чтобы логи шли в journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lumen-bot
+
+[Install]
+WantedBy=multi-user.target
